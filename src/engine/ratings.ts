@@ -55,7 +55,7 @@ export function buildLineup(team: Team): Lineup {
     RB2: rbs[1] ?? rbs[0] ?? one(team.depth.WR),
     FB: take(team.depth.FB, 1)[0],
     WR: take(team.depth.WR, 4),
-    TE: take(team.depth.TE, 2),
+    TE: take(team.depth.TE, 3),
     OL: take(team.depth.OL, 5),
     DL: take(team.depth.DL, 2),
     EDGE: take(team.depth.EDGE, 2),

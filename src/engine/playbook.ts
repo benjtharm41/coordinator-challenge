@@ -63,6 +63,33 @@ export const FORMATIONS: Record<Formation, FormationDef> = {
 
 export type Slot = 'WR1' | 'WR2' | 'WR3' | 'TE' | 'RB';
 
+/** A spot a receiver can line up in. */
+export type ReceiverSlot = 'WR1' | 'WR2' | 'WR3' | 'WR4' | 'TE1' | 'TE2' | 'TE3' | 'RB' | 'FB';
+
+/** Which slots exist in a formation. */
+export function slotsIn(f: FormationDef): ReceiverSlot[] {
+  const out: ReceiverSlot[] = [];
+  for (let i = 1; i <= f.wr; i++) out.push(`WR${i}` as ReceiverSlot);
+  for (let i = 1; i <= f.te; i++) out.push(`TE${i}` as ReceiverSlot);
+  if (f.rb) out.push('RB');
+  if (f.fb) out.push('FB');
+  return out;
+}
+
+const SLOT_FALLBACKS: Record<'WR1' | 'WR2' | 'WR3' | 'TE' | 'RB', ReceiverSlot[]> = {
+  WR1: ['WR1', 'TE2', 'TE1', 'RB'],
+  WR2: ['WR2', 'TE3', 'TE2', 'TE1', 'RB'],
+  WR3: ['WR3', 'TE2', 'FB', 'TE1', 'RB'],
+  TE: ['TE1', 'WR3', 'WR2', 'RB'],
+  RB: ['RB', 'FB', 'WR4', 'WR3', 'TE1'],
+};
+
+/** The player slot that actually runs a concept's route in this formation (e.g. no WR3 in a 2-WR set). */
+export function receiverSlotFor(f: FormationDef, slot: 'WR1' | 'WR2' | 'WR3' | 'TE' | 'RB'): ReceiverSlot {
+  const have = new Set(slotsIn(f));
+  return SLOT_FALLBACKS[slot].find((s) => have.has(s)) ?? 'TE1';
+}
+
 export interface RouteTarget {
   slot: Slot;
   route: string;

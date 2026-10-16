@@ -3,7 +3,7 @@
 //   2. player ratings
 //   3. controlled randomness
 // The outcome is decided here, before any animation.
-import { CONCEPTS, FORMATIONS, type RouteTarget, type Slot } from './playbook';
+import { CONCEPTS, FORMATIONS, receiverSlotFor, type FormationDef, type RouteTarget, type Slot } from './playbook';
 import { matchup, type Matchup, type SituationInfo } from './matchup';
 import type { Lineup, UnitRatings } from './ratings';
 import { clamp, logistic, logit, Rng } from './rng';
@@ -128,17 +128,17 @@ const r70 = (x: number) => x - 70;
 /** 0 outside the 10, rising to ~1 at the 1-2 yard line. */
 const goalLineSqueeze = (yardline: number) => (yardline <= 10 ? clamp((14 - yardline) / 10, 0.5, 1.1) : 0);
 
-function slotPlayer(l: Lineup, slot: Slot, formationWr: number): Player {
-  switch (slot) {
-    case 'WR1':
-      return l.WR[0];
-    case 'WR2':
-      return l.WR[1] ?? l.WR[0];
-    case 'WR3':
-      // In 2-WR sets the "slot" receiver is the TE2 or the RB.
-      return formationWr >= 3 ? l.WR[2] ?? l.WR[0] : l.TE[1] ?? l.TE[0] ?? l.WR[1];
-    case 'TE':
-      return l.TE[0] ?? l.WR[2] ?? l.WR[0];
+/** The player who runs a concept's route, always someone actually on the field in this formation. */
+function slotPlayer(l: Lineup, slot: Slot, form: FormationDef): Player {
+  const s = receiverSlotFor(form, slot);
+  const n = Number(s.slice(2)) - 1;
+  switch (s) {
+    case 'WR1': case 'WR2': case 'WR3': case 'WR4':
+      return l.WR[n] ?? l.WR[0];
+    case 'TE1': case 'TE2': case 'TE3':
+      return l.TE[n] ?? l.TE[0] ?? l.WR[0];
+    case 'FB':
+      return l.FB ?? l.RB2;
     case 'RB':
       return l.RB;
   }
@@ -321,7 +321,7 @@ function resolvePass(input: ResolveInput, m: Matchup, rpo: boolean): ScrimmageOu
 
   // 3) The throw: pick a target. QBs lean toward their better receivers.
   const targets = pd.targets.map((tg: RouteTarget) => {
-    const p = slotPlayer(o.lineup, tg.slot, form.wr);
+    const p = slotPlayer(o.lineup, tg.slot, form);
     const q = (p.r.route ?? p.ovr) - 70;
     return { tg, p, w: tg.weight * Math.exp(q * 0.02) };
   });

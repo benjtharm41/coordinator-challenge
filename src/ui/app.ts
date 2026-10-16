@@ -1,4 +1,4 @@
-// Phase 1 text-only interface: pick teams, call every play, read the play-by-play.
+// Interface: set up a game, call every play on an animated field, read the results.
 import { chooseTry, chooseTwoPointPlay, leagueXPass, quickPicksDefense, quickPicksOffense, type Situation } from '../engine/ai';
 import { recommendFourthDown, recommendTry } from '../engine/analytics';
 import { Game, type PlayLog } from '../engine/game';
@@ -8,12 +8,40 @@ import { CONCEPTS, COVERAGES, FORMATIONS, FRONTS, PRESSURES, pressuresFor } from
 import { fieldGoalProb } from '../engine/special';
 import { boxScore, playerSummary } from '../engine/stats';
 import {
-  conceptMatchups, COVERAGE_PLAIN, describeConcept, describeCoverage, describeFormation, describeFront, describePressure,
-  explainPlay, FORMATION_SHORT, FRONT_PLAIN, coverageMatchups,
+  conceptMatchups, COVERAGE_PLAIN, coverageMatchups, describeConcept, describeCoverage, describeFormation, describeFront, describePressure,
+  explainPlay, FORMATION_SHORT, FRONT_PLAIN,
 } from '../engine/teach';
 import { other, type Concept, type Coverage, type DefCall, type Formation, type Front, type OffCall, type OffChoice, type Pressure, type Side, type Team, type Tempo } from '../engine/types';
+import { defenseDiagram, formationDiagram, offenseDiagram } from '../field/diagram';
+import { DEFAULT_DEF, shotFor, type Shot } from '../field/director';
+import { buildScene, type Scene } from '../field/scene';
+import { FieldView, type OverlayChoice } from '../field/view';
 
 type Screen = 'setup' | 'game' | 'learn';
+type OverlayMode = 'off' | 'mine' | 'both';
+
+interface Settings {
+  coachRec: boolean;
+  tips: boolean;
+  autoWhy: boolean;
+  /** Tap a call once to see it on the field, tap again (or press Run) to call it. */
+  preview: boolean;
+  overlay: OverlayMode;
+  /** 1 or 2 = animation speed, 0 = skip animations. */
+  speed: 0 | 1 | 2;
+}
+
+interface Shown {
+  quarter: number;
+  clock: number;
+  score: Record<Side, number>;
+  timeouts: Record<Side, number>;
+  possession: Side;
+  down: string;
+  running: boolean;
+  final: boolean;
+  ot: boolean;
+}
 
 interface UIState {
   screen: Screen;
@@ -24,29 +52,36 @@ interface UIState {
   formation?: Formation;
   front?: Front;
   pressure: Pressure;
+  pickOff?: OffCall;
+  pickDef?: DefCall;
   cpuChoice?: OffChoice;
   cpuTry?: OffCall;
   tryMode: boolean;
-  recent: PlayLog[];
-  showLog: boolean;
-  settings: { coachRec: boolean; tips: boolean; autoWhy: boolean };
+  unplayed: PlayLog[];
+  played: PlayLog[];
+  watching?: string;
+  shown: Shown | null;
+  animating: boolean;
+  logOpen: boolean;
+  settings: Settings;
   setup: { team: string; opp: string; home: boolean; short: boolean };
 }
 
 const teams = allPlaceholderTeams();
 const byAbbr = (a: string) => teams.find((t) => t.info.abbr === a)!;
 
-const SETTINGS_KEY = 'cc.settings.v1';
-function loadSettings(): UIState['settings'] {
+const SETTINGS_KEY = 'cc.settings.v2';
+const DEFAULTS: Settings = { coachRec: true, tips: true, autoWhy: true, preview: true, overlay: 'both', speed: 1 };
+function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (raw) return { coachRec: true, tips: true, autoWhy: true, ...JSON.parse(raw) };
+    if (raw) return { ...DEFAULTS, ...JSON.parse(raw) };
   } catch {
     /* storage may be unavailable */
   }
-  return { coachRec: true, tips: true, autoWhy: true };
+  return { ...DEFAULTS };
 }
-function saveSettings(s: UIState['settings']) {
+function saveSettings(s: Settings) {
   try {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
   } catch {
@@ -55,12 +90,15 @@ function saveSettings(s: UIState['settings']) {
 }
 
 const st: UIState = {
-  screen: 'setup', learnReturn: 'setup', userSide: 'home', tempo: 'normal', pressure: 'base', tryMode: false, recent: [], showLog: false,
-  settings: loadSettings(),
+  screen: 'setup', learnReturn: 'setup', userSide: 'home', tempo: 'normal', pressure: 'base', tryMode: false, unplayed: [], played: [],
+  shown: null, animating: false, logOpen: false, settings: loadSettings(),
   setup: { team: 'KC', opp: 'BUF', home: true, short: false },
 };
 
 let root: HTMLElement;
+let field: FieldView | undefined;
+let fieldHost: HTMLElement | undefined;
+let lastOffense: Side | undefined;
 
 // ---------- tiny DOM helper ----------
 type Child = Node | string | null | undefined | false;
@@ -80,10 +118,13 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, 
 export function startApp(el: HTMLElement) {
   root = el;
   render();
+  if (import.meta.env.DEV) (window as unknown as { __cc: unknown }).__cc = { st, get field() { return field; } };
 }
 
 function render() {
+  document.body.classList.toggle('in-game', st.screen === 'game');
   root.replaceChildren(st.screen === 'setup' ? setupScreen() : st.screen === 'learn' ? learnScreen() : gameScreen());
+  if (st.screen === 'game') syncField();
 }
 
 // ---------- helpers ----------
@@ -112,16 +153,38 @@ function downText(game: Game) {
   return `${ord(s.down)} & ${dist} · ${spotText(game, s.possession, s.yardline)}`;
 }
 
+function snapshot(game: Game): Shown {
+  return {
+    quarter: game.s.quarter, clock: game.s.clock, score: { home: game.sides.home.score, away: game.sides.away.score },
+    timeouts: { home: game.sides.home.timeouts, away: game.sides.away.timeouts }, possession: game.s.possession, down: downText(game),
+    running: game.s.clockRunning && game.s.phase === 'scrimmage', final: game.s.phase === 'final', ot: game.s.ot.on,
+  };
+}
+
 // ---------- game flow ----------
+function ensureField() {
+  if (!fieldHost) {
+    fieldHost = h('div', { class: 'field-host', onclick: () => { if (field?.isPlaying()) field.skip(); } });
+    field = new FieldView(fieldHost);
+  }
+}
+
 function newGame() {
+  ensureField();
   const mine = byAbbr(st.setup.team);
   const opp = byAbbr(st.setup.opp);
   st.userSide = st.setup.home ? 'home' : 'away';
   const home = st.setup.home ? mine : opp;
   const away = st.setup.home ? opp : mine;
   st.game = new Game(home, away, { home: st.setup.home ? 'human' : 'cpu', away: st.setup.home ? 'cpu' : 'human' }, { short: st.setup.short });
-  st.recent = [...st.game.log];
+  st.unplayed = [];
+  st.played = [];
+  st.shown = null;
+  st.animating = false;
+  st.logOpen = false;
   st.tempo = 'normal';
+  lastOffense = undefined;
+  field?.stop();
   resetSelection();
   st.screen = 'game';
   advance();
@@ -130,6 +193,8 @@ function newGame() {
 function resetSelection() {
   st.formation = undefined;
   st.front = undefined;
+  st.pickOff = undefined;
+  st.pickDef = undefined;
   st.cpuChoice = undefined;
   st.cpuTry = undefined;
   st.tryMode = false;
@@ -164,21 +229,96 @@ function advance() {
         st.cpuChoice = undefined;
       } else break; // the human picks the defense
     }
-    st.recent.push(...game.log.slice(before));
+    st.unplayed.push(...game.log.slice(before));
   }
-  render();
+  startPlayback();
 }
 
 function act(fn: () => void) {
   const game = g();
   const before = game.log.length;
-  st.recent = [];
+  st.shown = snapshot(game);
+  st.played = [];
   fn();
-  st.recent.push(...game.log.slice(before));
+  st.unplayed.push(...game.log.slice(before));
   resetSelection();
   advance();
 }
 
+// ---------- playback ----------
+function startPlayback() {
+  if (st.animating) return;
+  if (!st.shown && st.unplayed.length) st.shown = snapshot(g());
+  playNext();
+}
+
+function describeShot(e: PlayLog): string {
+  switch (e.kind) {
+    case 'kickoff': return 'Kickoff';
+    case 'punt': return 'Punt';
+    case 'fg': return `Field goal try, ${e.yardline + 17} yards`;
+    case 'xp': return 'Extra point';
+    case '2pt': return 'Two-point try';
+    case 'kneel': return 'Kneel down';
+    case 'spike': return 'Spike';
+    case 'penalty': return 'Penalty flag';
+    default:
+      return e.offCall && e.defCall ? `${FORMATIONS[e.offCall.formation].name} · ${CONCEPTS[e.offCall.concept].name}  vs  ${defCallName(e.defCall)}` : 'Play';
+  }
+}
+
+function overlayFor(side: 'off' | 'def' | null): OverlayChoice {
+  const m = st.settings.overlay;
+  return { mine: m === 'off' ? null : side, reveal: m === 'both', labels: false };
+}
+
+function playNext() {
+  const game = g();
+  const e = st.unplayed.shift();
+  if (!e) {
+    st.animating = false;
+    st.shown = null;
+    st.watching = undefined;
+    render();
+    return;
+  }
+  const shot: Shot | null = shotFor(game, e);
+  if (!shot) {
+    settle(e);
+    playNext();
+    return;
+  }
+  ensureField();
+  st.animating = true;
+  st.watching = describeShot(e);
+  const offTeam = game.sides[e.offense].team;
+  const defTeam = game.sides[other(e.offense)].team;
+  field!.setTeams(offTeam, defTeam);
+  lastOffense = e.offense;
+  render();
+  const side: 'off' | 'def' = e.offense === st.userSide ? 'off' : 'def';
+  field!.play(shot, overlayFor(shot.scene ? side : null), Math.max(1, st.settings.speed), () => {
+    settle(e);
+    playNext();
+  });
+  if (st.settings.speed === 0) field!.skip();
+}
+
+function settle(e: PlayLog) {
+  if (st.shown) st.shown = { ...st.shown, score: e.score };
+  st.played.push(e);
+  if (st.animating) render();
+}
+
+function setSpeed(s: 0 | 1 | 2) {
+  st.settings.speed = s;
+  saveSettings(st.settings);
+  field?.setSpeed(Math.max(1, s));
+  if (s === 0) field?.skip();
+  render();
+}
+
+// ---------- calling plays ----------
 function callOffense(call: OffCall) {
   if (st.tryMode) act(() => g().doTry('2pt', call));
   else act(() => g().snap({ type: 'play', call, tempo: st.tempo }));
@@ -194,6 +334,86 @@ function callDefense(dc: DefCall) {
   act(() => g().snap(choice, dc));
 }
 
+const sameOff = (a?: OffCall, b?: OffCall) => !!a && !!b && a.formation === b.formation && a.concept === b.concept;
+const sameDef = (a?: DefCall, b?: DefCall) => !!a && !!b && a.front === b.front && a.coverage === b.coverage && a.pressure === b.pressure;
+
+function selectOff(call: OffCall) {
+  if (!st.settings.preview || sameOff(st.pickOff, call)) callOffense(call);
+  else {
+    st.pickOff = call;
+    st.formation = call.formation;
+    render();
+  }
+}
+function selectDef(dc: DefCall) {
+  if (!st.settings.preview || sameDef(st.pickDef, dc)) callDefense(dc);
+  else {
+    st.pickDef = dc;
+    st.front = dc.front;
+    render();
+  }
+}
+
+// ---------- the field ----------
+const HIDE_ROUTES = (s: Scene): Scene => ({ ...s, routes: [], run: undefined, blockers: [] });
+
+const defaultFormation = (yardline: number): Formation => (yardline <= 3 ? 'goalline' : 'shotgun');
+const defaultConcept = (f: Formation): Concept => (f === 'goalline' || f === 'heavy' || f === 'iform' ? 'inside_zone' : 'slant_flat');
+
+function syncField() {
+  if (!field || !fieldHost || st.animating || !st.game) return;
+  const game = g();
+  const d = game.pending();
+  if (d.kind === 'final') return;
+  const offSide: Side = d.kind === 'kickoff' ? d.kicking : d.kind === 'try' ? d.team : d.offense;
+  const defSide = other(offSide);
+  const offTeam = game.sides[offSide].team;
+  const defTeam = game.sides[defSide].team;
+  field.setTeams(offTeam, defTeam);
+  const flipped = lastOffense !== offSide;
+  lastOffense = offSide;
+  field.setSpeed(Math.max(1, st.settings.speed));
+
+  if (d.kind === 'kickoff') {
+    field.showEmpty(35);
+    return;
+  }
+  const isTry = d.kind === 'try';
+  const yardline = isTry ? 2 : game.s.yardline;
+  const losAbs = 100 - yardline;
+  const firstDownAbs = isTry ? undefined : Math.min(100, losAbs + game.s.distance);
+  const userOff = offSide === st.userSide;
+
+  let offCall: OffCall;
+  let defCall: DefCall;
+  let hideOff = false;
+  let ghost: 'off' | 'def' | undefined;
+  let side: 'off' | 'def' | null = null;
+  let labels = false;
+  if (userOff) {
+    const f = st.formation ?? defaultFormation(yardline);
+    offCall = st.pickOff ?? { formation: f, concept: defaultConcept(f) };
+    defCall = DEFAULT_DEF;
+    hideOff = !st.pickOff;
+    ghost = 'def';
+    side = st.pickOff ? 'off' : null;
+  } else {
+    const formation = st.cpuTry?.formation ?? (st.cpuChoice && st.cpuChoice.type === 'play' ? st.cpuChoice.call.formation : 'shotgun');
+    offCall = { formation, concept: defaultConcept(formation) };
+    hideOff = true;
+    const front = st.front ?? DEFAULT_DEF.front;
+    defCall = st.pickDef ?? { front, coverage: DEFAULT_DEF.coverage, pressure: pressuresFor(DEFAULT_DEF.coverage).includes(st.pressure) ? st.pressure : 'base' };
+    side = st.pickDef ? 'def' : null;
+    labels = !!st.pickDef;
+  }
+  let scene = buildScene(offTeam, defTeam, offCall, defCall);
+  if (hideOff) scene = HIDE_ROUTES(scene);
+  const ov = overlayFor(side);
+  ov.reveal = false;
+  ov.labels = labels;
+  field.showScene({ scene, losAbs, firstDownAbs }, ov, flipped, ghost);
+}
+
 // ---------- screens ----------
 function setupScreen(): HTMLElement {
   const opt = (t: Team, sel: string) => h('option', { value: t.info.abbr, selected: t.info.abbr === sel }, `${t.info.name}`);
@@ -201,13 +421,16 @@ function setupScreen(): HTMLElement {
     h('select', { onchange: (e: Event) => { st.setup[key] = (e.target as HTMLSelectElement).value; render(); } }, teams.map((t) => opt(t, st.setup[key])));
   const mine = byAbbr(st.setup.team);
   const opp = byAbbr(st.setup.opp);
-  const toggle = (label: string, key: keyof UIState['settings'], help: string) =>
+  const toggle = (label: string, key: 'coachRec' | 'tips' | 'autoWhy' | 'preview', help: string) =>
     h('label', { class: 'toggle' },
       h('input', { type: 'checkbox', checked: st.settings[key], onchange: (e: Event) => { st.settings[key] = (e.target as HTMLInputElement).checked; saveSettings(st.settings); } }),
       h('span', {}, h('b', {}, label), h('small', {}, help)));
+  const seg = <T extends string | number>(label: string, value: T, options: [T, string][], set: (v: T) => void, help: string) =>
+    h('div', { class: 'seg-setting' }, h('b', {}, label), h('small', {}, help),
+      h('div', { class: 'seg' }, options.map(([v, text]) => h('button', { class: v === value ? 'on' : '', onclick: () => { set(v); saveSettings(st.settings); render(); } }, text))));
   return h('div', { class: 'screen setup' },
     h('h1', {}, 'Coordinator Challenge'),
-    h('p', { class: 'muted' }, 'You call every play: offense and defense. Phase 1: text play-by-play with placeholder players.'),
+    h('p', { class: 'muted' }, 'You call every play: offense and defense. Team names, colors and head coaches are real; players are placeholders until the data update.'),
     h('div', { class: 'card' },
       h('label', { class: 'field' }, h('span', {}, 'Your team'), teamSelect('team')),
       h('div', { class: 'coach' }, `Your head coach: ${mine.info.headCoach}`),
@@ -224,7 +447,11 @@ function setupScreen(): HTMLElement {
     h('div', { class: 'card' },
       toggle("Coach's recommendation", 'coachRec', 'Suggests what to do on 4th downs and after touchdowns, with a reason.'),
       toggle('Play tips on buttons', 'tips', 'Shows what each call does and what it beats.'),
-      toggle('Explain every play', 'autoWhy', 'Opens the "why it worked / failed" note automatically.')),
+      toggle('Explain every play', 'autoWhy', 'Opens the "why it worked / failed" note automatically.'),
+      toggle('Preview before calling', 'preview', 'Tap a call once to see it drawn on the field, tap again to run it.'),
+      seg<OverlayMode>('Routes and zones on the field', st.settings.overlay, [['off', 'Off'], ['mine', 'My call'], ['both', 'Both after snap']], (v) => { st.settings.overlay = v; },
+        'Draws your routes (offense) or zones (defense). "Both" reveals the opponent\'s call once the play starts.'),
+      seg<0 | 1 | 2>('Animation speed', st.settings.speed, [[1, '1x'], [2, '2x'], [0, 'Skip']], (v) => { st.settings.speed = v; }, 'You can change this during a game.')),
     h('button', { class: 'primary big', disabled: st.setup.team === st.setup.opp, onclick: newGame }, 'Kick off'),
     h('button', { class: 'ghost big', onclick: () => { st.learnReturn = 'setup'; st.screen = 'learn'; render(); } }, 'Learn the basics'),
   );
@@ -232,22 +459,23 @@ function setupScreen(): HTMLElement {
 
 function scoreboard(): HTMLElement {
   const game = g();
-  const side = (s: Side) => {
-    const t = game.sides[s];
-    const hasBall = game.s.possession === s && game.s.phase !== 'final';
-    return h('div', { class: `sb-team ${s}`, style: { borderColor: t.team.info.color } },
-      h('div', { class: 'sb-abbr' }, t.team.info.abbr, hasBall ? h('span', { class: 'ball' }, ' 🏈') : null, s === st.userSide ? h('span', { class: 'you' }, 'YOU') : null),
-      h('div', { class: 'sb-score' }, String(t.score)),
-      h('div', { class: 'sb-to' }, Array.from({ length: game.s.ot.on ? 2 : 3 }, (_, i) => h('i', { class: i < t.timeouts ? 'full' : '' }))));
+  const s = st.shown ?? snapshot(game);
+  const side = (sd: Side) => {
+    const t = game.sides[sd];
+    const hasBall = s.possession === sd && !s.final;
+    return h('div', { class: `sb-team ${sd}`, style: { borderColor: t.team.info.color } },
+      h('div', { class: 'sb-abbr' }, t.team.info.abbr, hasBall ? h('span', { class: 'ball' }, ' 🏈') : null, sd === st.userSide ? h('span', { class: 'you' }, 'YOU') : null),
+      h('div', { class: 'sb-score' }, String(s.score[sd])),
+      h('div', { class: 'sb-to' }, Array.from({ length: s.ot ? 2 : 3 }, (_, i) => h('i', { class: i < s.timeouts[sd] ? 'full' : '' }))));
   };
   return h('header', { class: 'scoreboard' },
     h('div', { class: 'sb-row' },
       side('away'),
       h('div', { class: 'sb-mid' },
-        h('div', { class: 'sb-clock' }, game.s.phase === 'final' ? 'FINAL' : `${qName(game.s.quarter)} ${fmtClock(game.s.clock)}`),
-        h('div', { class: 'sb-run' }, game.s.clockRunning && game.s.phase === 'scrimmage' ? '⏱ clock running' : '')),
+        h('div', { class: 'sb-clock' }, s.final ? 'FINAL' : `${qName(s.quarter)} ${fmtClock(s.clock)}`),
+        h('div', { class: 'sb-run' }, s.running ? '⏱ clock running' : '')),
       side('home')),
-    h('div', { class: 'sb-down' }, downText(game)));
+    h('div', { class: 'sb-down' }, s.down));
 }
 
 function entryClass(e: PlayLog) {
@@ -257,51 +485,81 @@ function entryClass(e: PlayLog) {
   return '';
 }
 
-function lastPlayCard(): HTMLElement | null {
-  const game = g();
-  const items = st.recent.filter((e) => e.kind !== 'info' || /warning|quarter|Halftime|Overtime|toss|Turnover|Final|receive/.test(e.text));
+const NOTABLE = /warning|quarter|Halftime|Overtime|toss|Turnover|Final|receive/;
+
+function fieldBar(): HTMLElement {
+  const sp = (v: 0 | 1 | 2, label: string) => h('button', { class: `chip ${st.settings.speed === v ? 'on' : ''}`, onclick: (e: Event) => { e.stopPropagation(); setSpeed(v); } }, label);
+  const mode = st.settings.overlay;
+  return h('div', { class: 'field-bar' },
+    h('div', { class: 'speed' }, sp(1, '1x'), sp(2, '2x'), sp(0, 'Skip')),
+    h('button', {
+      class: `chip lines ${mode === 'off' ? '' : 'on'}`,
+      onclick: (e: Event) => {
+        e.stopPropagation();
+        st.settings.overlay = mode === 'off' ? 'both' : 'off';
+        saveSettings(st.settings);
+        render();
+      },
+    }, mode === 'off' ? 'Routes: off' : 'Routes: on'));
+}
+
+function stripCard(): HTMLElement | null {
+  if (st.animating) {
+    return h('section', { class: 'strip watching' }, h('div', { class: 'meta' }, 'Watching'), h('div', { class: 'txt' }, st.watching ?? ''));
+  }
+  const items = st.played.filter((e) => e.kind !== 'info' || NOTABLE.test(e.text));
   if (!items.length) return null;
-  const rows = items.map((e) => {
+  const game = g();
+  const rows = items.slice(-3).map((e, i, arr) => {
     const off = game.sides[e.offense].team.info.abbr;
     const meta = e.down > 0 && e.kind !== 'info' && e.kind !== 'timeout' ? `${off} · ${ord(e.down)} & ${e.distance} · ${qName(e.quarter)} ${fmtClock(e.clock)}` : '';
-    const why = e.outcome && e.offCall && e.defCall && e.kind !== 'penalty'
+    const last = i === arr.length - 1;
+    const why = last && e.outcome && e.offCall && e.defCall && e.kind !== 'penalty'
       ? h('details', { class: 'why', open: st.settings.autoWhy },
           h('summary', {}, e.offense === st.userSide ? 'Why it worked / failed' : 'What happened on defense'),
-          h('p', {}, explainPlay(e.outcome, e.offCall, e.defCall, e.offense === st.userSide, e.down || 4, e.distance || 2)),
-          h('p', { class: 'calls' }, `Offense: ${FORMATIONS[e.offCall.formation].name} · ${CONCEPTS[e.offCall.concept].name}. Defense: ${defCallName(e.defCall)}.`))
+          h('p', {}, explainPlay(e.outcome, e.offCall, e.defCall, e.offense === st.userSide, e.down || 4, e.distance || 2)))
       : null;
     return h('div', { class: `play ${entryClass(e)}` }, meta ? h('div', { class: 'meta' }, meta) : null, h('div', { class: 'txt' }, e.text), why);
   });
-  return h('section', { class: 'card last' }, rows);
+  return h('section', { class: 'strip' }, rows);
 }
 
-function logPanel(): HTMLElement {
+function logModal(): HTMLElement | null {
+  if (!st.logOpen) return null;
   const game = g();
-  return h('section', { class: 'card log' },
-    h('button', { class: 'linklike', onclick: () => { st.showLog = !st.showLog; render(); } }, st.showLog ? 'Hide play-by-play ▲' : 'Show full play-by-play ▼'),
-    st.showLog
-      ? h('ol', { reversed: true }, [...game.log].reverse().slice(0, 250).map((e) =>
-          h('li', { class: entryClass(e) },
-            h('span', { class: 'meta' }, `${qName(e.quarter)} ${fmtClock(e.clock)} ${e.down ? `${game.sides[e.offense].team.info.abbr} ${ord(e.down)}&${e.distance}` : ''}`),
-            ' ', e.text)))
-      : null);
+  return h('div', { class: 'modal', onclick: () => { st.logOpen = false; render(); } },
+    h('div', { class: 'modal-card', onclick: (e: Event) => e.stopPropagation() },
+      h('div', { class: 'row-head' }, h('b', {}, 'Play-by-play'), h('button', { class: 'linklike', onclick: () => { st.logOpen = false; render(); } }, 'Close')),
+      h('ol', { class: 'log-list' }, [...game.log].reverse().slice(0, 300).map((e) =>
+        h('li', { class: entryClass(e) },
+          h('span', { class: 'meta' }, `${qName(e.quarter)} ${fmtClock(e.clock)} ${e.down ? `${game.sides[e.offense].team.info.abbr} ${ord(e.down)}&${e.distance}` : ''}`),
+          ' ', e.text)))));
 }
 
 function gameScreen(): HTMLElement {
+  ensureField();
   const game = g();
+  const isFinal = game.s.phase === 'final' && !st.animating;
   return h('div', { class: 'screen game' },
     scoreboard(),
-    h('div', { class: 'opp-line' }, `vs ${cpuTeam().team.info.name} · play-caller ${cpuTeam().team.info.headCoach}`,
-      h('button', { class: 'linklike', onclick: () => { st.learnReturn = 'game'; st.screen = 'learn'; render(); } }, 'Learn')),
-    lastPlayCard(),
-    game.s.phase === 'final' ? finalPanel() : null,
-    logPanel(),
-    game.s.phase === 'final' ? null : h('div', { class: 'sheet-spacer' }),
-    game.s.phase === 'final' ? null : controls());
+    h('div', { class: 'opp-line' },
+      h('span', {}, `vs ${cpuTeam().team.info.name} · play-caller ${cpuTeam().team.info.headCoach}`),
+      h('span', { class: 'links' },
+        h('button', { class: 'linklike', onclick: () => { st.logOpen = true; render(); } }, 'Log'),
+        h('button', { class: 'linklike', onclick: () => { st.learnReturn = 'game'; st.screen = 'learn'; render(); } }, 'Learn'))),
+    h('div', { class: 'field-wrap' }, fieldHost!, fieldBar()),
+    stripCard(),
+    isFinal ? finalPanel() : h('div', { class: 'sheet' }, st.animating ? watchingSheet() : controls()),
+    logModal());
+}
+
+function watchingSheet(): HTMLElement[] {
+  return [h('div', { class: 'prompt' }, 'Watching the play…'),
+    h('div', { class: 'grid2' }, h('button', { onclick: () => field?.skip() }, 'Skip this play'), h('button', { onclick: () => setSpeed(0) }, 'Skip all animations'))];
 }
 
 // ---------- the bottom sheet ----------
-function controls(): HTMLElement {
+function controls(): (HTMLElement | null)[] {
   const game = g();
   const d = game.pending();
   let body: (HTMLElement | null)[] = [];
@@ -327,7 +585,7 @@ function controls(): HTMLElement {
     if (d.offense === st.userSide) body = offensePicker(null, false);
     else body = defensePicker(null, (st.cpuChoice as { call: OffCall }).call.formation, false);
   }
-  return h('div', { class: 'sheet' }, body);
+  return body;
 }
 
 function tipLine(text: string) {
@@ -339,11 +597,28 @@ function situationForPicks(asTry: boolean): Situation {
   return asTry ? { ...s, down: 4, distance: 2, yardline: 2 } : s;
 }
 
-function offensePicker(title: string | null, asTry: boolean): HTMLElement[] {
+function pickBar(name: string, detail: string, run: () => void, clear: () => void): HTMLElement {
+  return h('div', { class: 'pick-bar' },
+    h('div', { class: 'pick-name' }, h('b', {}, name), h('small', {}, detail)),
+    h('button', { class: 'chip', onclick: clear }, 'Cancel'),
+    h('button', { class: 'primary run', onclick: run }, 'Run it'));
+}
+
+function artButton(img: string, title: string, lines: (HTMLElement | null)[], onclick: () => void, selected = false, quick = false) {
+  return h('button', { class: `call art ${selected ? 'selected' : ''} ${quick ? 'quick-btn' : ''}`, onclick },
+    h('img', { src: img, alt: '', draggable: 'false' }), h('span', { class: 'call-title' }, title), lines);
+}
+
+function offensePicker(title: string | null, asTry: boolean): (HTMLElement | null)[] {
   const game = g();
   const s = situationForPicks(asTry);
-  const out: HTMLElement[] = [];
+  const out: (HTMLElement | null)[] = [];
   if (title) out.push(h('div', { class: 'prompt' }, title));
+
+  if (st.pickOff) {
+    const c = st.pickOff;
+    out.push(pickBar(CONCEPTS[c.concept].name, `${FORMATIONS[c.formation].name}. ${CONCEPTS[c.concept].blurb}`, () => callOffense(c), () => { st.pickOff = undefined; render(); }));
+  }
 
   if (st.formation) {
     const f = st.formation;
@@ -351,9 +626,10 @@ function offensePicker(title: string | null, asTry: boolean): HTMLElement[] {
     const btn = (c: Concept) => {
       const m = conceptMatchups(c);
       const tip = [m.strong.length ? `Beats ${m.strong.map((x) => COVERAGES[x].name).join(', ')}` : '', m.weak.length ? `Weak vs ${m.weak.map((x) => COVERAGES[x].name).join(', ')}` : ''].filter(Boolean).join(' · ');
-      return h('button', { class: 'call', onclick: () => callOffense({ formation: f, concept: c }) }, CONCEPTS[c].name, tipLine(CONCEPTS[c].blurb), tipLine(tip));
+      const call = { formation: f, concept: c };
+      return artButton(offenseDiagram(call), CONCEPTS[c].name, [tipLine(CONCEPTS[c].blurb), tipLine(tip)], () => selectOff(call), sameOff(st.pickOff, call));
     };
-    out.push(h('div', { class: 'row-head' }, h('button', { class: 'linklike', onclick: () => { st.formation = undefined; render(); } }, '‹ Formations'), h('b', {}, FORMATIONS[f].name)));
+    out.push(h('div', { class: 'row-head' }, h('button', { class: 'linklike', onclick: () => { st.formation = undefined; st.pickOff = undefined; render(); } }, '‹ Formations'), h('b', {}, FORMATIONS[f].name)));
     const runs = avail.filter((c) => CONCEPTS[c].kind === 'run');
     const passes = avail.filter((c) => CONCEPTS[c].kind === 'pass');
     if (runs.length) out.push(h('div', { class: 'label' }, 'Runs'), h('div', { class: 'grid2' }, runs.map(btn)));
@@ -383,10 +659,11 @@ function offensePicker(title: string | null, asTry: boolean): HTMLElement[] {
 
   const picks = quickPicksOffense(s, userTeam().team);
   out.push(h('div', { class: 'label' }, 'Quick picks'), h('div', { class: 'grid2 quick' }, picks.map((c) =>
-    h('button', { class: 'call', onclick: () => callOffense(c) }, `${CONCEPTS[c.concept].name}`, h('small', {}, FORMATIONS[c.formation].name)))));
+    artButton(offenseDiagram(c), CONCEPTS[c.concept].name, [h('small', {}, FORMATIONS[c.formation].name)], () => selectOff(c), sameOff(st.pickOff, c), true))));
   out.push(h('div', { class: 'label' }, 'Formation'),
     h('div', { class: 'grid3' }, (Object.keys(FORMATIONS) as Formation[]).filter((f) => FORMATIONS[f].concepts.some((c) => conceptAllowed(c, s))).map((f) =>
-      h('button', { class: 'call', onclick: () => { st.formation = f; render(); } }, FORMATIONS[f].name, tipLine(FORMATION_SHORT[f])))));
+      h('button', { class: 'call art', onclick: () => { st.formation = f; st.pickOff = undefined; render(); } },
+        h('img', { src: formationDiagram(f), alt: '', draggable: 'false' }), h('span', { class: 'call-title' }, FORMATIONS[f].name), tipLine(FORMATION_SHORT[f])))));
   return out;
 }
 
@@ -399,31 +676,34 @@ function conceptAllowed(c: Concept, s: Situation) {
 function timeoutButton(chip = false) {
   const game = g();
   return h('button', { class: chip ? 'chip' : '', onclick: () => {
-    st.recent = [];
     const before = game.log.length;
     game.timeout(st.userSide);
-    st.recent.push(...game.log.slice(before));
+    st.played = game.log.slice(before);
     render();
   } }, 'Timeout', h('small', {}, `${userTeam().timeouts} left`));
 }
 
-function defensePicker(title: string | null, offFormation: Formation, asTry: boolean): HTMLElement[] {
-  const game = g();
+function defensePicker(title: string | null, offFormation: Formation, asTry: boolean): (HTMLElement | null)[] {
   const s = situationForPicks(asTry);
   const f = FORMATIONS[offFormation];
-  const out: HTMLElement[] = [];
+  const out: (HTMLElement | null)[] = [];
   const choice = st.cpuChoice;
   const tempoNote = choice?.type === 'play' && choice.tempo === 'hurry' ? ' They are hurrying to the line.' : '';
   out.push(h('div', { class: 'prompt-row' },
     h('div', { class: 'prompt' }, title ?? `${cpuTeam().team.info.abbr} line up in ${f.name}: ${f.wr} WR, ${f.te} TE, ${f.rb + f.fb} RB.${tempoNote}`),
     !asTry && userTeam().timeouts > 0 ? timeoutButton(true) : null));
 
+  if (st.pickDef) {
+    const dc = st.pickDef;
+    out.push(pickBar(`${COVERAGES[dc.coverage].name}${dc.pressure === 'base' ? '' : ' + ' + PRESSURES[dc.pressure].name}`, `${FRONTS[dc.front].name}. ${COVERAGES[dc.coverage].blurb}`, () => callDefense(dc), () => { st.pickDef = undefined; render(); }));
+  }
+
   if (st.front) {
     const fr = st.front;
-    out.push(h('div', { class: 'row-head' }, h('button', { class: 'linklike', onclick: () => { st.front = undefined; render(); } }, '‹ Fronts'), h('b', {}, FRONTS[fr].name)));
+    out.push(h('div', { class: 'row-head' }, h('button', { class: 'linklike', onclick: () => { st.front = undefined; st.pickDef = undefined; render(); } }, '‹ Fronts'), h('b', {}, FRONTS[fr].name)));
     out.push(h('div', { class: 'label' }, 'Pressure (pick first, then tap a coverage)'),
       h('div', { class: 'seg wrap' }, (Object.keys(PRESSURES) as Pressure[]).map((p) =>
-        h('button', { class: st.pressure === p ? 'on' : '', onclick: () => { st.pressure = p; render(); } }, PRESSURES[p].name))));
+        h('button', { class: st.pressure === p ? 'on' : '', onclick: () => { st.pressure = p; st.pickDef = undefined; render(); } }, PRESSURES[p].name))));
     if (st.settings.tips) out.push(h('div', { class: 'tip' }, describePressure(st.pressure)));
     out.push(h('div', { class: 'label' }, 'Coverage'),
       h('div', { class: 'grid2' }, (Object.keys(COVERAGES) as Coverage[]).map((c) => {
@@ -431,21 +711,21 @@ function defensePicker(title: string | null, offFormation: Formation, asTry: boo
         const pr = allowed.includes(st.pressure) ? st.pressure : allowed[0];
         const m = coverageMatchups(c);
         const tip = `${COVERAGE_PLAIN[c].split(',')[0]}${m.stops.length ? ` · Stops ${m.stops.slice(0, 2).map((x) => CONCEPTS[x].name).join(', ')}` : ''}`;
-        return h('button', { class: 'call', onclick: () => callDefense({ front: fr, coverage: c, pressure: pr }) },
-          COVERAGES[c].name + (pr !== st.pressure ? ` + ${PRESSURES[pr].name}` : ''), tipLine(tip));
+        const dc: DefCall = { front: fr, coverage: c, pressure: pr };
+        return artButton(defenseDiagram(dc, offFormation), COVERAGES[c].name + (pr !== st.pressure ? ` + ${PRESSURES[pr].name}` : ''), [tipLine(tip)], () => selectDef(dc), sameDef(st.pickDef, dc));
       })));
     return out;
   }
 
   const picks = quickPicksDefense(s, cpuTeam().team, offFormation);
   out.push(h('div', { class: 'label' }, 'Quick picks'), h('div', { class: 'grid2 quick' }, picks.map((dc) =>
-    h('button', { class: 'call', onclick: () => callDefense(dc) }, COVERAGES[dc.coverage].name + (dc.pressure !== 'base' ? ` · ${PRESSURES[dc.pressure].name}` : ''), h('small', {}, FRONTS[dc.front].name)))));
+    artButton(defenseDiagram(dc, offFormation), COVERAGES[dc.coverage].name + (dc.pressure !== 'base' ? ` · ${PRESSURES[dc.pressure].name}` : ''), [h('small', {}, FRONTS[dc.front].name)], () => selectDef(dc), sameDef(st.pickDef, dc), true))));
   const xp = leagueXPass(s);
   out.push(h('div', { class: 'hint' }, `League teams pass about ${Math.round(xp * 100)}% of the time in this spot.`));
   out.push(h('div', { class: 'label' }, 'Front'),
     h('div', { class: 'grid2' }, (Object.keys(FRONTS) as Front[]).map((fr) =>
-      h('button', { class: 'call', onclick: () => { st.front = fr; render(); } }, FRONTS[fr].name, tipLine(FRONT_PLAIN[fr].split('.').slice(1, 2).join('').trim() || FRONT_PLAIN[fr])))));
-  void game;
+      artButton(defenseDiagram({ front: fr, coverage: 'c3', pressure: 'base' }, offFormation), FRONTS[fr].name,
+        [tipLine(FRONT_PLAIN[fr].split('.').slice(1, 2).join('').trim() || FRONT_PLAIN[fr])], () => { st.front = fr; st.pickDef = undefined; render(); }))));
   return out;
 }
 
@@ -456,7 +736,7 @@ function finalPanel(): HTMLElement {
   const b = box.team;
   const won = game.s.winner === st.userSide;
   const players = box.players.filter((l) => l.passAtt || l.rushAtt >= 3 || l.rec >= 2).sort((a, b2) => (b2.passYds + b2.rushYds + b2.recYds) - (a.passYds + a.rushYds + a.recYds)).slice(0, 8);
-  return h('section', { class: 'card final' },
+  return h('section', { class: 'sheet final' },
     h('h2', {}, game.s.winner === 'tie' ? 'A tie.' : won ? 'You win!' : 'You lose.'),
     h('table', { class: 'box' },
       h('tr', {}, h('td', {}, game.sides.away.team.info.abbr), h('th', {}, ''), h('td', {}, game.sides.home.team.info.abbr)),
@@ -484,10 +764,21 @@ function learnScreen(): HTMLElement {
     const i = t.indexOf(':');
     return h('li', {}, h('b', {}, t.slice(0, i + 1)), t.slice(i + 1));
   }));
+  const withArt = (items: { text: string; img: string }[]) => h('ul', { class: 'art-list' }, items.map(({ text, img }) => {
+    const i = text.indexOf(':');
+    return h('li', {}, h('img', { src: img, alt: '', draggable: 'false' }), h('div', {}, h('b', {}, text.slice(0, i + 1)), text.slice(i + 1)));
+  }));
   const concepts = Object.keys(CONCEPTS) as Concept[];
+  const formationFor = (c: Concept): Formation => (FORMATIONS.shotgun.concepts.includes(c) ? 'shotgun' : (Object.keys(FORMATIONS) as Formation[]).find((f) => FORMATIONS[f].concepts.includes(c))!);
+  const offArt = (kind: 'run' | 'pass') => concepts.filter((c) => CONCEPTS[c].kind === kind).map((c) => ({ text: describeConcept(c), img: offenseDiagram({ formation: formationFor(c), concept: c }) }));
+  const exampleFormation: Formation = 'shotgun';
   return h('div', { class: 'screen learn' },
     h('div', { class: 'row-head' }, h('button', { class: 'linklike', onclick: () => { st.screen = st.learnReturn; render(); } }, '‹ Back'), h('b', {}, 'Learn')),
     h('p', { class: 'muted' }, 'Tap a section to open it. You can read these any time during a game.'),
+    sec('How to read the diagrams',
+      'Offense is drawn with circles (O) and the quarterback is the filled circle. White lines are routes: where each receiver runs. A yellow arrow is the ball carrier on a run. Short T-shaped lines are players staying in to block.',
+      'Defense is drawn with X\'s. Yellow and pink ovals are zones: each defender guards an area. Dashed blue lines mean man-to-man: that defender follows one receiver. Red arrows are blitzers rushing the quarterback.',
+      'On the field during a game the same lines are drawn on top of the players. Turn them on or off with the "Routes" button above the field.'),
     sec('The basics',
       list([
         'Downs: The offense gets 4 tries ("downs") to gain 10 yards. Gain them and you get a fresh set: "1st & 10".',
@@ -498,18 +789,21 @@ function learnScreen(): HTMLElement {
         'Clock: The clock stops on incomplete passes, scores, turnovers, and timeouts, and (late in halves) when a player runs out of bounds. Each team has 3 timeouts per half.',
         'Tempo: Huddle uses about 35 seconds between plays. Hurry-up uses about 13. Milk clock uses all 40 seconds of the play clock: great when protecting a lead.',
         'Spike and kneel: Spike = throw the ball into the ground to stop the clock (costs a down). Kneel = take a knee to run out the clock when winning.',
+        'The field view: The offense always moves up the screen. The blue line is where the ball is spotted; the yellow line is where the offense needs to reach for a first down.',
       ])),
     sec('How each play is decided',
       'Every snap, your call is matched against the other coordinator\'s call. Some calls beat others (a screen against a blitz, a run against a defense with few players near the line). That matchup matters most.',
       'Then player ratings matter: a great quarterback completes more passes, a great pass rush gets more sacks.',
       'Finally there\'s some luck, so a good call can still fail and a bad call can still work. Over a game, good calls add up.',
       'Watch out: the other coordinator scouts you. Call the same thing over and over and they will adjust to stop it.'),
-    sec('Offensive formations', list((Object.keys(FORMATIONS) as Formation[]).map(describeFormation))),
-    sec('Run plays', list(concepts.filter((c) => CONCEPTS[c].kind === 'run').map(describeConcept))),
-    sec('Pass plays', list(concepts.filter((c) => CONCEPTS[c].kind === 'pass').map(describeConcept))),
-    sec('Defensive fronts (who is on the field)', list((Object.keys(FRONTS) as Front[]).map(describeFront))),
-    sec('Coverages (how the defense guards passes)', list((Object.keys(COVERAGES) as Coverage[]).map(describeCoverage))),
-    sec('Pressure (blitzing)', list((Object.keys(PRESSURES) as Pressure[]).map(describePressure))),
+    sec('Offensive formations', withArt((Object.keys(FORMATIONS) as Formation[]).map((f) => ({ text: describeFormation(f), img: formationDiagram(f) })))),
+    sec('Run plays', withArt(offArt('run'))),
+    sec('Pass plays', withArt(offArt('pass'))),
+    sec('Defensive fronts (who is on the field)', withArt((Object.keys(FRONTS) as Front[]).map((fr) => ({ text: describeFront(fr), img: defenseDiagram({ front: fr, coverage: 'c3', pressure: 'base' }, exampleFormation) })))),
+    sec('Coverages (how the defense guards passes)', withArt((Object.keys(COVERAGES) as Coverage[]).map((c) => ({ text: describeCoverage(c), img: defenseDiagram({ front: 'nickel', coverage: c, pressure: 'base' }, exampleFormation) })))),
+    sec('Pressure (blitzing)', withArt((Object.keys(PRESSURES) as Pressure[]).map((p) => ({
+      text: describePressure(p), img: defenseDiagram({ front: '43', coverage: p === 'all_out' ? 'c0' : p === 'zone_blitz' ? 'c3' : 'c1', pressure: p }, exampleFormation),
+    })))),
     sec('Cheat sheet: what beats what',
       list([
         'Blitz coming: Screens and quick passes (Slant-Flat, Mesh, WR Screen). Avoid slow deep shots.',
