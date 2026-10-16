@@ -3,7 +3,7 @@ import { chooseTry, chooseTwoPointPlay, leagueXPass, quickPicksDefense, quickPic
 import { recommendFourthDown, recommendTry } from '../engine/analytics';
 import { Game, type PlayLog } from '../engine/game';
 import { defCallName } from '../engine/narrate';
-import { allPlaceholderTeams } from '../engine/placeholder';
+import { describeFreshness, loadManifest, loadTeam, placeholderPreviews, type Manifest, type TeamPreview } from '../data/load';
 import { CONCEPTS, COVERAGES, FORMATIONS, FRONTS, PRESSURES, pressuresFor } from '../engine/playbook';
 import { fieldGoalProb } from '../engine/special';
 import { boxScore, playerSummary } from '../engine/stats';
@@ -11,7 +11,7 @@ import {
   conceptMatchups, COVERAGE_PLAIN, coverageMatchups, describeConcept, describeCoverage, describeFormation, describeFront, describePressure,
   explainPlay, FORMATION_SHORT, FRONT_PLAIN,
 } from '../engine/teach';
-import { other, type Concept, type Coverage, type DefCall, type Formation, type Front, type OffCall, type OffChoice, type Pressure, type Side, type Team, type Tempo } from '../engine/types';
+import { other, type Concept, type Coverage, type DefCall, type Formation, type Front, type OffCall, type OffChoice, type Pressure, type Side, type Tempo } from '../engine/types';
 import { defenseDiagram, formationDiagram, offenseDiagram } from '../field/diagram';
 import { DEFAULT_DEF, shotFor, type Shot } from '../field/director';
 import { buildScene, type Scene } from '../field/scene';
@@ -67,8 +67,16 @@ interface UIState {
   setup: { team: string; opp: string; home: boolean; short: boolean };
 }
 
-const teams = allPlaceholderTeams();
-const byAbbr = (a: string) => teams.find((t) => t.info.abbr === a)!;
+const SUFFIXES = new Set(['jr.', 'jr', 'sr.', 'sr', 'ii', 'iii', 'iv', 'v']);
+const lastName = (full: string) => {
+  const parts = full.split(' ');
+  while (parts.length > 1 && SUFFIXES.has(parts[parts.length - 1].toLowerCase())) parts.pop();
+  return parts[parts.length - 1];
+};
+let roster: TeamPreview[] = placeholderPreviews();
+let manifest: Manifest | null = null;
+let dataState: 'loading' | 'real' | 'placeholder' = 'loading';
+const previewOf = (a: string): TeamPreview => roster.find((t) => t.abbr === a) ?? roster[0];
 
 const SETTINGS_KEY = 'cc.settings.v2';
 const DEFAULTS: Settings = { coachRec: true, tips: true, autoWhy: true, preview: true, overlay: 'both', speed: 1 };
@@ -118,6 +126,13 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, 
 export function startApp(el: HTMLElement) {
   root = el;
   render();
+  void loadManifest().then((m) => {
+    manifest = m;
+    if (m) roster = m.teams;
+    dataState = m ? 'real' : 'placeholder';
+    if (!roster.some((t) => t.abbr === st.setup.team)) st.setup.team = roster[0].abbr;
+    if (st.screen === 'setup') render();
+  });
   if (import.meta.env.DEV) (window as unknown as { __cc: unknown }).__cc = { st, get field() { return field; } };
 }
 
@@ -169,10 +184,13 @@ function ensureField() {
   }
 }
 
-function newGame() {
+let starting = false;
+async function newGame() {
+  if (starting) return;
+  starting = true;
   ensureField();
-  const mine = byAbbr(st.setup.team);
-  const opp = byAbbr(st.setup.opp);
+  const [mine, opp] = await Promise.all([loadTeam(st.setup.team), loadTeam(st.setup.opp)]);
+  starting = false;
   st.userSide = st.setup.home ? 'home' : 'away';
   const home = st.setup.home ? mine : opp;
   const away = st.setup.home ? opp : mine;
@@ -416,11 +434,23 @@ function syncField() {
 
 // ---------- screens ----------
 function setupScreen(): HTMLElement {
-  const opt = (t: Team, sel: string) => h('option', { value: t.info.abbr, selected: t.info.abbr === sel }, `${t.info.name}`);
+  const opt = (t: TeamPreview, sel: string) => h('option', { value: t.abbr, selected: t.abbr === sel }, `${t.name}`);
   const teamSelect = (key: 'team' | 'opp') =>
-    h('select', { onchange: (e: Event) => { st.setup[key] = (e.target as HTMLSelectElement).value; render(); } }, teams.map((t) => opt(t, st.setup[key])));
-  const mine = byAbbr(st.setup.team);
-  const opp = byAbbr(st.setup.opp);
+    h('select', { onchange: (e: Event) => { st.setup[key] = (e.target as HTMLSelectElement).value; render(); } }, roster.map((t) => opt(t, st.setup[key])));
+  const mine = previewOf(st.setup.team);
+  const opp = previewOf(st.setup.opp);
+  const teamCard = (t: TeamPreview, who: string) => {
+    const g = t.grades;
+    return [
+      h('div', { class: 'coach' }, `${who}: ${t.headCoach}`),
+      t.headline.length
+        ? h('div', { class: 'preview' },
+            h('div', {}, t.headline.slice(0, 5).map((p) => h('span', { class: `pl ${p.injury ? 'hurt' : ''}` }, `${p.label} ${lastName(p.name)} ${p.ovr}${p.injury ? ' (' + p.injury + ')' : ''}`))),
+            h('div', { class: 'grades' }, `QB ${g.qb} · O-line ${g.ol} · Receivers ${g.pass} · Pass rush ${g.rush} · Coverage ${g.cover}`),
+            t.injuries.length ? h('div', { class: 'inj' }, 'Injury report: ' + t.injuries.slice(0, 5).map((i) => `${i.name} (${i.status})`).join(', ')) : null)
+        : null,
+    ];
+  };
   const toggle = (label: string, key: 'coachRec' | 'tips' | 'autoWhy' | 'preview', help: string) =>
     h('label', { class: 'toggle' },
       h('input', { type: 'checkbox', checked: st.settings[key], onchange: (e: Event) => { st.settings[key] = (e.target as HTMLInputElement).checked; saveSettings(st.settings); } }),
@@ -430,12 +460,13 @@ function setupScreen(): HTMLElement {
       h('div', { class: 'seg' }, options.map(([v, text]) => h('button', { class: v === value ? 'on' : '', onclick: () => { set(v); saveSettings(st.settings); render(); } }, text))));
   return h('div', { class: 'screen setup' },
     h('h1', {}, 'Coordinator Challenge'),
-    h('p', { class: 'muted' }, 'You call every play: offense and defense. Team names, colors and head coaches are real; players are placeholders until the data update.'),
+    h('p', { class: 'muted' }, 'You call every play: offense and defense. Real teams, head coaches and players.'),
+    h('p', { class: `data-note ${dataState}` }, dataState === 'loading' ? 'Loading team data…' : manifest ? describeFreshness(manifest) : 'Could not load the latest data, so this game uses made-up players. Connect to the internet once and reload.'),
     h('div', { class: 'card' },
       h('label', { class: 'field' }, h('span', {}, 'Your team'), teamSelect('team')),
-      h('div', { class: 'coach' }, `Your head coach: ${mine.info.headCoach}`),
+      teamCard(mine, 'Your head coach'),
       h('label', { class: 'field' }, h('span', {}, 'Opponent'), teamSelect('opp')),
-      h('div', { class: 'coach' }, `Their play-caller: ${opp.info.headCoach}`),
+      teamCard(opp, 'Their play-caller'),
       st.setup.team === st.setup.opp ? h('div', { class: 'warn' }, 'Pick two different teams.') : null,
       h('div', { class: 'seg' },
         h('button', { class: st.setup.home ? 'on' : '', onclick: () => { st.setup.home = true; render(); } }, 'Home'),
@@ -452,7 +483,7 @@ function setupScreen(): HTMLElement {
       seg<OverlayMode>('Routes and zones on the field', st.settings.overlay, [['off', 'Off'], ['mine', 'My call'], ['both', 'Both after snap']], (v) => { st.settings.overlay = v; },
         'Draws your routes (offense) or zones (defense). "Both" reveals the opponent\'s call once the play starts.'),
       seg<0 | 1 | 2>('Animation speed', st.settings.speed, [[1, '1x'], [2, '2x'], [0, 'Skip']], (v) => { st.settings.speed = v; }, 'You can change this during a game.')),
-    h('button', { class: 'primary big', disabled: st.setup.team === st.setup.opp, onclick: newGame }, 'Kick off'),
+    h('button', { class: 'primary big', disabled: st.setup.team === st.setup.opp || dataState === 'loading', onclick: () => void newGame() }, dataState === 'loading' ? 'Loading…' : 'Kick off'),
     h('button', { class: 'ghost big', onclick: () => { st.learnReturn = 'setup'; st.screen = 'learn'; render(); } }, 'Learn the basics'),
   );
 }
@@ -753,7 +784,7 @@ function finalPanel(): HTMLElement {
     h('h3', {}, 'Top players'),
     h('ul', { class: 'players' }, players.map((l) => h('li', {}, `${game.sides[l.side].team.info.abbr} ${playerSummary(l)}`))),
     h('div', { class: 'grid2' },
-      h('button', { class: 'primary', onclick: newGame }, 'Rematch'),
+      h('button', { class: 'primary', onclick: () => void newGame() }, 'Rematch'),
       h('button', { onclick: () => { st.screen = 'setup'; render(); } }, 'New matchup')));
 }
 

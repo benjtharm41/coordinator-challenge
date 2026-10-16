@@ -4,3 +4,5 @@ dist/
 *.local
 pipeline/raw/
 calibration-report.txt
+__pycache__/
+*.pyc

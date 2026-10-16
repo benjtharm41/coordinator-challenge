@@ -1,32 +1,64 @@
-# Builds the game and publishes it to GitHub Pages whenever code is pushed to main.
-name: Deploy to GitHub Pages
+# Builds the game and publishes it to GitHub Pages.
+#  - On every push to main: build with the data already in the repository.
+#  - Every Tuesday morning (after Monday Night Football) and on demand: download fresh
+#    nflverse data first, rebuild the team files, test, publish, and save the new data.
+name: Build and deploy
 
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: '17 10 * * 2'
   workflow_dispatch:
+    inputs:
+      refresh_data:
+        description: 'Download fresh NFL data before building'
+        type: boolean
+        default: true
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      REFRESH: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.refresh_data) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
+      - uses: actions/setup-python@v5
+        if: env.REFRESH == 'true'
+        with:
+          python-version: '3.12'
+      - name: Download and process fresh NFL data
+        if: env.REFRESH == 'true'
+        run: python3 pipeline/build_data.py --cache "$RUNNER_TEMP/nflverse"
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - name: Save the refreshed data in the repository
+        if: env.REFRESH == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/data src/engine/data
+          if git diff --cached --quiet; then
+            echo "Data unchanged."
+          else
+            git commit -m "Weekly data refresh"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

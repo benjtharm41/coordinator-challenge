@@ -173,3 +173,13 @@ ul.art-list img { width: 140px; flex: 0 0 auto; border-radius: 8px; background: 
 .seg-setting { padding: 8px 0; }
 .seg-setting small { display: block; color: var(--muted); }
 .seg-setting .seg { margin-top: 6px; }
+
+/* Team preview on the setup screen */
+.data-note { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
+.data-note.real { color: #86efac; }
+.data-note.placeholder { color: #fbbf24; }
+.preview { margin: 0 0 12px; font-size: 13px; }
+.preview .pl { display: inline-block; background: var(--panel2); border-radius: 8px; padding: 2px 8px; margin: 0 4px 4px 0; }
+.preview .pl.hurt { color: #fca5a5; }
+.preview .grades { color: var(--muted); }
+.preview .inj { color: #fca5a5; margin-top: 2px; }

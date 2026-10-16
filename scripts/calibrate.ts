@@ -4,6 +4,7 @@
 import { writeFileSync } from 'node:fs';
 import { formatMetric, metrics, simulate, TARGETS } from '../src/engine/calibration';
 import { Game } from '../src/engine/game';
+import { hasRealData, loadRealTeams } from '../tests/helpers/realTeams';
 import { allPlaceholderTeams } from '../src/engine/placeholder';
 import { buildLineup, unitRatings } from '../src/engine/ratings';
 import { Rng } from '../src/engine/rng';
@@ -17,12 +18,13 @@ const out = (s = '') => {
 };
 
 const t0 = Date.now();
-const totals = simulate({ games: N, seed: 2026 });
+const real = hasRealData() ? loadRealTeams() : undefined;
+const totals = simulate({ games: N, seed: 2026, teams: real });
 const ms = Date.now() - t0;
 
 out(`# Calibration report`);
 out();
-out(`${N} computer-vs-computer games (placeholder rosters), simulated in ${(ms / 1000).toFixed(1)}s.`);
+out(`${N} computer-vs-computer games (${real ? 'real 2026 rosters and tendencies' : 'placeholder rosters'}), simulated in ${(ms / 1000).toFixed(1)}s.`);
 out(`Real numbers: nflverse play-by-play, 2025 season + 2026 to date (${TARGETS.games} regular-season games).`);
 out();
 out(`| Stat | Sim | Real NFL | Within tolerance? |`);
@@ -49,7 +51,7 @@ out(`## Short-quarters mode`);
 out(`Plays per team per game: ${(short.plays / (short.games * 2)).toFixed(1)} (full game: ${(totals.plays / tg).toFixed(1)}). Points per team: ${(short.points / (short.games * 2)).toFixed(1)}.`);
 
 // ---- Do better players matter?
-const teams = allPlaceholderTeams();
+const teams = real ?? allPlaceholderTeams();
 const strength = (t: Team) => {
   const r = unitRatings(buildLineup(t));
   return (r.qbAcc + r.passBlock + r.runBlock + r.rbRush + r.passRush + r.runDef + r.coverage) / 7;
@@ -85,7 +87,7 @@ for (const [a, b] of [[best, worst], [best, mid], [mid, worst]] as [Team, Team][
 const buckets = new Map<string, { n: number; yards: number; success: number }>();
 const rng = new Rng(5);
 for (let i = 0; i < Math.max(150, N / 4); i++) {
-  const g = new Game(teams[rng.int(0, 31)], teams[rng.int(0, 31)], { home: 'cpu', away: 'cpu' }, { seed: rng.int(1, 2 ** 31) });
+  const g = new Game(teams[rng.int(0, teams.length - 1)], teams[rng.int(0, teams.length - 1)], { home: 'cpu', away: 'cpu' }, { seed: rng.int(1, 2 ** 31) });
   g.simToEnd();
   for (const e of g.log) {
     const o = e.outcome;
