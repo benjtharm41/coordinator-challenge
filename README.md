@@ -6,11 +6,13 @@ Personal, non-commercial project. No NFL or team logos are used.
 
 ## Status
 
-- **Phase 1 (done):** simulation engine, text play-by-play, placeholder players, Learn screen, calibration and exploit tests.
-- Phase 2: animated field and full mobile UI.
-- Phase 3: real nflverse data pipeline (weekly GitHub Action).
-- Phase 4: Situations mode, stats tracking, home-screen install, backup export/import.
-- Phase 5: deploy to GitHub Pages.
+All five phases are built:
+
+1. Simulation engine calibrated to real NFL averages (`docs/CALIBRATION.md`), plus exploit and sanity tests (`docs/EXPLOIT-TESTS.md`).
+2. Animated field, drawn diagrams for every call, route and zone overlays, phone layout.
+3. Real nflverse data (rosters, depth charts, injuries, ratings, tendencies) refreshed by a weekly GitHub Action (`docs/DATA.md`).
+4. Situations mode (11 scenarios, `docs/SCENARIOS.md`), stats tracking, backup export/import, home-screen install and offline play.
+5. Deployed to GitHub Pages.
 
 ## Commands
 
@@ -21,6 +23,8 @@ Personal, non-commercial project. No NFL or team logos are used.
 | `npm test` | Runs every automated test. |
 | `npm run calibrate` | Sims 1,000 computer-vs-computer games and compares to real NFL averages. Writes `docs/CALIBRATION.md`. |
 | `npm run exploits` | Checks that no single repeated call wins and that results look sane. Writes `docs/EXPLOIT-TESTS.md`. |
+| `npm run scenarios` | Checks that each Situation is winnable but not a sure thing. Writes `docs/SCENARIOS.md`. |
+| `python3 pipeline/build_data.py` | Downloads fresh nflverse data and rebuilds the team files. |
 | `npm run build` | Builds the site for hosting. |
 
 ## How a play is decided

@@ -9,6 +9,19 @@ import { other, type DefCall, type OffCall, type OffChoice, type Side, type Team
 
 export type Controller = 'human' | 'cpu';
 
+export interface ScenarioSetup {
+  quarter: number;
+  clock: number;
+  possession: Side;
+  /** Distance to the end zone the offense attacks. */
+  yardline: number;
+  down: number;
+  distance: number;
+  score: Record<Side, number>;
+  timeouts: Record<Side, number>;
+  ot?: boolean;
+}
+
 export interface GameSettings {
   quarterSeconds: number;
   /** Short game: the clock runs faster between plays (outside the last 2:00 of each half). */
@@ -128,6 +141,32 @@ export class Game {
       ot: { on: false, possessions: { home: 0, away: 0 } }, untimedDown: false, pendingQuarterEnd: false,
     };
     this.info(`${this.sides[receiver].team.info.name} will receive the opening kickoff.`);
+  }
+
+  // ---------------- Scenarios ----------------
+
+  /** Jump straight to a game situation (used by Situations mode). */
+  applySetup(setup: ScenarioSetup) {
+    this.s.quarter = setup.quarter;
+    this.s.clock = setup.clock;
+    this.s.phase = 'scrimmage';
+    this.s.possession = setup.possession;
+    this.s.yardline = setup.yardline;
+    this.s.down = setup.down;
+    this.s.distance = setup.distance;
+    this.s.clockRunning = false;
+    this.s.untimedDown = false;
+    this.s.warned = {};
+    if ((setup.quarter === 2 || setup.quarter === 4) && setup.clock <= 120) this.s.warned[setup.quarter] = true;
+    this.s.ot = { on: !!setup.ot, possessions: { home: 0, away: 0 }, first: setup.ot ? setup.possession : undefined };
+    this.s.openingReceiver = other(setup.possession);
+    this.sides.home.score = setup.score.home;
+    this.sides.away.score = setup.score.away;
+    this.sides.home.timeouts = setup.timeouts.home;
+    this.sides.away.timeouts = setup.timeouts.away;
+    this.log = [];
+    this.drives = [];
+    this.startDrive();
   }
 
   // ---------------- Queries ----------------

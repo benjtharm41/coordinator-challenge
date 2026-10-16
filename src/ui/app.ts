@@ -2,6 +2,8 @@
 import { chooseTry, chooseTwoPointPlay, leagueXPass, quickPicksDefense, quickPicksOffense, type Situation } from '../engine/ai';
 import { recommendFourthDown, recommendTry } from '../engine/analytics';
 import { Game, type PlayLog } from '../engine/game';
+import { type Outcome, type Scenario } from '../engine/scenario';
+import { addGame, addScenario, callRecords, gameRecord, loadSave, scenarioRecord, writeSave, type CallRec, type Save } from '../store/store';
 import { defCallName } from '../engine/narrate';
 import { describeFreshness, loadManifest, loadTeam, placeholderPreviews, type Manifest, type TeamPreview } from '../data/load';
 import { CONCEPTS, COVERAGES, FORMATIONS, FRONTS, PRESSURES, pressuresFor } from '../engine/playbook';
@@ -16,8 +18,10 @@ import { defenseDiagram, formationDiagram, offenseDiagram } from '../field/diagr
 import { DEFAULT_DEF, shotFor, type Shot } from '../field/director';
 import { buildScene, type Scene } from '../field/scene';
 import { FieldView, type OverlayChoice } from '../field/view';
+import { h } from './dom';
+import { homeScreen, installScreen, situationsScreen, statsScreen, type ScreenCtx } from './screens';
 
-type Screen = 'setup' | 'game' | 'learn';
+type Screen = 'home' | 'setup' | 'situations' | 'stats' | 'install' | 'game' | 'learn';
 type OverlayMode = 'off' | 'mine' | 'both';
 
 interface Settings {
@@ -63,6 +67,14 @@ interface UIState {
   shown: Shown | null;
   animating: boolean;
   logOpen: boolean;
+  save: Save;
+  scenario?: Scenario;
+  pendingScenario?: Scenario;
+  scenarioResult?: Outcome;
+  calls: CallRec[];
+  recorded: boolean;
+  mode: 'full' | 'short';
+  message: { text: string; bad?: boolean } | null;
   settings: Settings;
   setup: { team: string; opp: string; home: boolean; short: boolean };
 }
@@ -98,8 +110,8 @@ function saveSettings(s: Settings) {
 }
 
 const st: UIState = {
-  screen: 'setup', learnReturn: 'setup', userSide: 'home', tempo: 'normal', pressure: 'base', tryMode: false, unplayed: [], played: [],
-  shown: null, animating: false, logOpen: false, settings: loadSettings(),
+  screen: 'home', learnReturn: 'home', userSide: 'home', tempo: 'normal', pressure: 'base', tryMode: false, unplayed: [], played: [],
+  shown: null, animating: false, logOpen: false, settings: loadSettings(), save: loadSave(), calls: [], recorded: false, mode: 'full', message: null,
   setup: { team: 'KC', opp: 'BUF', home: true, short: false },
 };
 
@@ -107,21 +119,6 @@ let root: HTMLElement;
 let field: FieldView | undefined;
 let fieldHost: HTMLElement | undefined;
 let lastOffense: Side | undefined;
-
-// ---------- tiny DOM helper ----------
-type Child = Node | string | null | undefined | false;
-function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, unknown> = {}, ...children: (Child | Child[])[]): HTMLElementTagNameMap[K] {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (v === undefined || v === null || v === false) continue;
-    if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v as EventListener);
-    else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
-    else if (k === 'class') el.className = String(v);
-    else el.setAttribute(k, v === true ? '' : String(v));
-  }
-  for (const c of children.flat()) if (c !== null && c !== undefined && c !== false) el.append(c);
-  return el;
-}
 
 export function startApp(el: HTMLElement) {
   root = el;
@@ -131,14 +128,23 @@ export function startApp(el: HTMLElement) {
     if (m) roster = m.teams;
     dataState = m ? 'real' : 'placeholder';
     if (!roster.some((t) => t.abbr === st.setup.team)) st.setup.team = roster[0].abbr;
-    if (st.screen === 'setup') render();
+    if (st.screen === 'setup' || st.screen === 'home' || st.screen === 'situations') render();
   });
   if (import.meta.env.DEV) (window as unknown as { __cc: unknown }).__cc = { st, get field() { return field; } };
 }
 
 function render() {
   document.body.classList.toggle('in-game', st.screen === 'game');
-  root.replaceChildren(st.screen === 'setup' ? setupScreen() : st.screen === 'learn' ? learnScreen() : gameScreen());
+  const view =
+    st.screen === 'home' ? homeScreen(screenCtx())
+    : st.screen === 'setup' ? setupScreen()
+    : st.screen === 'situations' ? situationsScreen(screenCtx())
+    : st.screen === 'stats' ? statsScreen(screenCtx())
+    : st.screen === 'install' ? installScreen(screenCtx())
+    : st.screen === 'learn' ? learnScreen()
+    : gameScreen();
+  root.replaceChildren(view);
+  window.scrollTo(0, 0);
   if (st.screen === 'game') syncField();
 }
 
@@ -185,16 +191,24 @@ function ensureField() {
 }
 
 let starting = false;
-async function newGame() {
+async function newGame(scenario?: Scenario) {
   if (starting) return;
   starting = true;
   ensureField();
   const [mine, opp] = await Promise.all([loadTeam(st.setup.team), loadTeam(st.setup.opp)]);
   starting = false;
-  st.userSide = st.setup.home ? 'home' : 'away';
-  const home = st.setup.home ? mine : opp;
-  const away = st.setup.home ? opp : mine;
-  st.game = new Game(home, away, { home: st.setup.home ? 'human' : 'cpu', away: st.setup.home ? 'cpu' : 'human' }, { short: st.setup.short });
+  // Situations always put you on the home side.
+  const home_ = scenario ? true : st.setup.home;
+  st.userSide = home_ ? 'home' : 'away';
+  const home = home_ ? mine : opp;
+  const away = home_ ? opp : mine;
+  st.game = new Game(home, away, { home: home_ ? 'human' : 'cpu', away: home_ ? 'cpu' : 'human' }, { short: !scenario && st.setup.short });
+  st.scenario = scenario;
+  st.scenarioResult = undefined;
+  st.calls = [];
+  st.recorded = false;
+  st.mode = !scenario && st.setup.short ? 'short' : 'full';
+  if (scenario) st.game.applySetup(scenario.setup);
   st.unplayed = [];
   st.played = [];
   st.shown = null;
@@ -219,9 +233,22 @@ function resetSelection() {
 }
 
 /** Run any steps that don't need the human, stopping at the next human decision. */
+function judgeScenario(): boolean {
+  const sc = st.scenario;
+  if (!sc) return false;
+  if (st.scenarioResult) return true;
+  const out = sc.judge(g(), g().log);
+  if (!out) return false;
+  st.scenarioResult = out;
+  st.save = addScenario(st.save, scenarioRecord(sc, out, g().sides[st.userSide].team.info.abbr, cpuTeam().team.info.abbr));
+  if (!writeSave(st.save)) st.message = { text: 'Could not save this result (browser storage is full or blocked).', bad: true };
+  return true;
+}
+
 function advance() {
   const game = g();
   for (let i = 0; i < 50; i++) {
+    if (judgeScenario()) break;
     const d = game.pending();
     const before = game.log.length;
     if (d.kind === 'final') break;
@@ -249,6 +276,7 @@ function advance() {
     }
     st.unplayed.push(...game.log.slice(before));
   }
+  judgeScenario();
   startPlayback();
 }
 
@@ -258,7 +286,9 @@ function act(fn: () => void) {
   st.shown = snapshot(game);
   st.played = [];
   fn();
-  st.unplayed.push(...game.log.slice(before));
+  const made = game.log.slice(before);
+  st.calls.push(...callRecords(made, st.userSide));
+  st.unplayed.push(...made);
   resetSelection();
   advance();
 }
@@ -297,6 +327,11 @@ function playNext() {
     st.animating = false;
     st.shown = null;
     st.watching = undefined;
+    if (game.s.phase === 'final' && !st.scenario && !st.recorded) {
+      st.recorded = true;
+      st.save = addGame(st.save, gameRecord(game, st.userSide, st.mode, st.calls));
+      if (!writeSave(st.save)) st.message = { text: 'Could not save this game (browser storage is full or blocked). Save a backup from My stats.', bad: true };
+    }
     render();
     return;
   }
@@ -379,7 +414,7 @@ const defaultFormation = (yardline: number): Formation => (yardline <= 3 ? 'goal
 const defaultConcept = (f: Formation): Concept => (f === 'goalline' || f === 'heavy' || f === 'iform' ? 'inside_zone' : 'slant_flat');
 
 function syncField() {
-  if (!field || !fieldHost || st.animating || !st.game) return;
+  if (!field || !fieldHost || st.animating || !st.game || st.scenarioResult) return;
   const game = g();
   const d = game.pending();
   if (d.kind === 'final') return;
@@ -433,7 +468,13 @@ function syncField() {
 }
 
 // ---------- screens ----------
-function setupScreen(): HTMLElement {
+const dataNote = () =>
+  dataState === 'loading' ? 'Loading team data…'
+  : manifest ? describeFreshness(manifest)
+  : 'Could not load the latest data, so games use made-up players. Connect to the internet once and reload.';
+
+/** Team pickers with a preview of each team (used for full games and Situations). */
+function teamPickers(withSides: boolean): HTMLElement {
   const opt = (t: TeamPreview, sel: string) => h('option', { value: t.abbr, selected: t.abbr === sel }, `${t.name}`);
   const teamSelect = (key: 'team' | 'opp') =>
     h('select', { onchange: (e: Event) => { st.setup[key] = (e.target as HTMLSelectElement).value; render(); } }, roster.map((t) => opt(t, st.setup[key])));
@@ -451,6 +492,51 @@ function setupScreen(): HTMLElement {
         : null,
     ];
   };
+  return h('div', { class: 'card' },
+    h('label', { class: 'field' }, h('span', {}, 'Your team'), teamSelect('team')),
+    teamCard(mine, 'Your head coach'),
+    h('label', { class: 'field' }, h('span', {}, 'Opponent'), teamSelect('opp')),
+    teamCard(opp, 'Their play-caller'),
+    st.setup.team === st.setup.opp ? h('div', { class: 'warn' }, 'Pick two different teams.') : null,
+    withSides ? [
+      h('div', { class: 'seg' },
+        h('button', { class: st.setup.home ? 'on' : '', onclick: () => { st.setup.home = true; render(); } }, 'Home'),
+        h('button', { class: !st.setup.home ? 'on' : '', onclick: () => { st.setup.home = false; render(); } }, 'Away')),
+      h('div', { class: 'seg' },
+        h('button', { class: !st.setup.short ? 'on' : '', onclick: () => { st.setup.short = false; render(); } }, 'Full game (~30 min)'),
+        h('button', { class: st.setup.short ? 'on' : '', onclick: () => { st.setup.short = true; render(); } }, 'Short quarters (~15 min)')),
+    ] : null);
+}
+
+function screenCtx(): ScreenCtx {
+  return {
+    go: (screen) => {
+      if (screen === 'learn') st.learnReturn = st.screen;
+      st.message = null;
+      st.pendingScenario = undefined;
+      st.screen = screen;
+      render();
+    },
+    save: () => st.save,
+    setSave: (v) => {
+      st.save = v;
+      if (!writeSave(v)) st.message = { text: 'Could not save to this browser (storage is full or blocked).', bad: true };
+    },
+    dataNote,
+    startScenario: (sc) => {
+      if (st.setup.team === st.setup.opp || dataState === 'loading') return;
+      void newGame(sc);
+    },
+    teamPickers: () => teamPickers(false),
+    rerender: render,
+    get message() { return st.message; },
+    setMessage: (m) => { st.message = m; },
+    get pendingScenario() { return st.pendingScenario; },
+    pickScenario: (sc) => { st.pendingScenario = sc; render(); },
+  } as ScreenCtx;
+}
+
+function setupScreen(): HTMLElement {
   const toggle = (label: string, key: 'coachRec' | 'tips' | 'autoWhy' | 'preview', help: string) =>
     h('label', { class: 'toggle' },
       h('input', { type: 'checkbox', checked: st.settings[key], onchange: (e: Event) => { st.settings[key] = (e.target as HTMLInputElement).checked; saveSettings(st.settings); } }),
@@ -459,22 +545,9 @@ function setupScreen(): HTMLElement {
     h('div', { class: 'seg-setting' }, h('b', {}, label), h('small', {}, help),
       h('div', { class: 'seg' }, options.map(([v, text]) => h('button', { class: v === value ? 'on' : '', onclick: () => { set(v); saveSettings(st.settings); render(); } }, text))));
   return h('div', { class: 'screen setup' },
-    h('h1', {}, 'Coordinator Challenge'),
-    h('p', { class: 'muted' }, 'You call every play: offense and defense. Real teams, head coaches and players.'),
-    h('p', { class: `data-note ${dataState}` }, dataState === 'loading' ? 'Loading team data…' : manifest ? describeFreshness(manifest) : 'Could not load the latest data, so this game uses made-up players. Connect to the internet once and reload.'),
-    h('div', { class: 'card' },
-      h('label', { class: 'field' }, h('span', {}, 'Your team'), teamSelect('team')),
-      teamCard(mine, 'Your head coach'),
-      h('label', { class: 'field' }, h('span', {}, 'Opponent'), teamSelect('opp')),
-      teamCard(opp, 'Their play-caller'),
-      st.setup.team === st.setup.opp ? h('div', { class: 'warn' }, 'Pick two different teams.') : null,
-      h('div', { class: 'seg' },
-        h('button', { class: st.setup.home ? 'on' : '', onclick: () => { st.setup.home = true; render(); } }, 'Home'),
-        h('button', { class: !st.setup.home ? 'on' : '', onclick: () => { st.setup.home = false; render(); } }, 'Away')),
-      h('div', { class: 'seg' },
-        h('button', { class: !st.setup.short ? 'on' : '', onclick: () => { st.setup.short = false; render(); } }, 'Full game (~30 min)'),
-        h('button', { class: st.setup.short ? 'on' : '', onclick: () => { st.setup.short = true; render(); } }, 'Short quarters (~15 min)')),
-    ),
+    h('div', { class: 'row-head' }, h('button', { class: 'linklike', onclick: () => { st.screen = 'home'; render(); } }, '‹ Menu'), h('b', {}, 'Full game')),
+    h('p', { class: `data-note ${dataState}` }, dataNote()),
+    teamPickers(true),
     h('div', { class: 'card' },
       toggle("Coach's recommendation", 'coachRec', 'Suggests what to do on 4th downs and after touchdowns, with a reason.'),
       toggle('Play tips on buttons', 'tips', 'Shows what each call does and what it beats.'),
@@ -484,7 +557,6 @@ function setupScreen(): HTMLElement {
         'Draws your routes (offense) or zones (defense). "Both" reveals the opponent\'s call once the play starts.'),
       seg<0 | 1 | 2>('Animation speed', st.settings.speed, [[1, '1x'], [2, '2x'], [0, 'Skip']], (v) => { st.settings.speed = v; }, 'You can change this during a game.')),
     h('button', { class: 'primary big', disabled: st.setup.team === st.setup.opp || dataState === 'loading', onclick: () => void newGame() }, dataState === 'loading' ? 'Loading…' : 'Kick off'),
-    h('button', { class: 'ghost big', onclick: () => { st.learnReturn = 'setup'; st.screen = 'learn'; render(); } }, 'Learn the basics'),
   );
 }
 
@@ -576,12 +648,38 @@ function gameScreen(): HTMLElement {
     h('div', { class: 'opp-line' },
       h('span', {}, `vs ${cpuTeam().team.info.name} · play-caller ${cpuTeam().team.info.headCoach}`),
       h('span', { class: 'links' },
+        h('button', { class: 'linklike', onclick: leaveGame }, 'Menu'),
         h('button', { class: 'linklike', onclick: () => { st.logOpen = true; render(); } }, 'Log'),
         h('button', { class: 'linklike', onclick: () => { st.learnReturn = 'game'; st.screen = 'learn'; render(); } }, 'Learn'))),
+    st.scenario ? h('div', { class: 'goal' }, h('b', {}, st.scenario.title + ': '), st.scenario.win) : null,
     h('div', { class: 'field-wrap' }, fieldHost!, fieldBar()),
     stripCard(),
-    isFinal ? finalPanel() : h('div', { class: 'sheet' }, st.animating ? watchingSheet() : controls()),
+    st.scenarioResult && !st.animating ? scenarioResultPanel() : isFinal ? finalPanel() : h('div', { class: 'sheet' }, st.animating ? watchingSheet() : controls()),
     logModal());
+}
+
+function leaveGame() {
+  const live = st.game && st.game.s.phase !== 'final' && !st.scenarioResult;
+  if (live && !confirm('Leave this game? It will not be saved.')) return;
+  field?.stop();
+  st.animating = false;
+  st.unplayed = [];
+  st.shown = null;
+  st.screen = st.scenario ? 'situations' : 'home';
+  st.pendingScenario = undefined;
+  render();
+}
+
+function scenarioResultPanel(): HTMLElement {
+  const sc = st.scenario!;
+  const r = st.scenarioResult!;
+  return h('section', { class: 'sheet final' },
+    h('h2', { class: r.result }, r.result === 'win' ? 'You did it!' : r.result === 'tie' ? 'So close.' : 'Not this time.'),
+    h('p', {}, r.message),
+    h('p', { class: 'muted' }, r.result === 'win' ? sc.win : sc.lose),
+    h('div', { class: 'grid2' },
+      h('button', { class: 'primary', onclick: () => void newGame(sc) }, 'Try again'),
+      h('button', { onclick: () => { st.screen = 'situations'; st.pendingScenario = undefined; render(); } }, 'More situations')));
 }
 
 function watchingSheet(): HTMLElement[] {
@@ -669,7 +767,8 @@ function offensePicker(title: string | null, asTry: boolean): (HTMLElement | nul
   }
 
   // 4th down / special options and coach's recommendation.
-  if (!asTry) {
+  const playsOnly = !!st.scenario?.playsOnly;
+  if (!asTry && !playsOnly) {
     if (s.down === 4 && st.settings.coachRec) {
       const rec = recommendFourthDown({ yardline: s.yardline, distance: s.distance, scoreDiff: s.scoreDiff, quarter: s.quarter, secondsLeftInGame: s.secondsLeftGame, secondsLeftInHalf: s.secondsLeftHalf, fgProb: s.fgProb, netPunt: 42, ot: s.ot });
       out.push(h('div', { class: 'rec' }, `Coach: ${rec.choice === 'go' ? 'Go for it' : rec.choice === 'fg' ? 'Kick the field goal' : 'Punt'}. ${rec.reason}`));

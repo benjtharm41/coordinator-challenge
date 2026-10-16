@@ -10,7 +10,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "calibrate": "tsx scripts/calibrate.ts",
-    "exploits": "tsx scripts/exploits.ts"
+    "exploits": "tsx scripts/exploits.ts",
+    "scenarios": "tsx scripts/scenarios.ts"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",

@@ -1,6 +1,6 @@
 # Calibration report
 
-1000 computer-vs-computer games (real 2026 rosters and tendencies), simulated in 6.5s.
+1000 computer-vs-computer games (real 2026 rosters and tendencies), simulated in 6.0s.
 Real numbers: nflverse play-by-play, 2025 season + 2026 to date (352 regular-season games).
 
 | Stat | Sim | Real NFL | Within tolerance? |

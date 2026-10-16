@@ -1,6 +1,7 @@
 // Tools for automated exploit / sanity testing (used by tests and scripts/exploits.ts).
-import { chooseDefense, type Situation } from './ai';
+import { chooseDefense, chooseOffensePlay, type Situation } from './ai';
 import { Game } from './game';
+import type { Outcome, Scenario } from './scenario';
 import { LEAGUE_COVERAGE_MIX } from './matchup';
 import { placeholderTeam, TEAM_INFO } from './placeholder';
 import { CONCEPTS, FORMATIONS } from './playbook';
@@ -204,4 +205,21 @@ export function scoreSanity(games: number, teams: Team[], seed = 11): ScoreSanit
     games, avgTeamPoints: sum / (2 * games), avgCombined: sum / games, maxTeamPoints: max, pctTeamScoresOver45: over45 / (2 * games),
     shutoutPct: shutouts / (2 * games), oneScoreGamePct: oneScore / games, tiePct: ties / games, impossibleScores: impossible,
   };
+}
+
+/** Play a scenario with the computer making the user's calls too. Returns the judged outcome. */
+export function simulateScenario(sc: Scenario, home: Team, away: Team, seed: number): Outcome | undefined {
+  const g = new Game(home, away, { home: 'cpu', away: 'cpu' }, { seed });
+  g.applySetup(sc.setup);
+  for (let i = 0; i < 600; i++) {
+    const pre = sc.judge(g, g.log);
+    if (pre) return pre;
+    if (g.s.phase === 'final') return undefined;
+    const d = g.pending();
+    if (d.kind === 'snap' && d.offense === 'home' && sc.playsOnly) {
+      g.cpuTimeouts();
+      g.snap({ type: 'play', call: chooseOffensePlay(g.situation(), g.sides.home.team, g.rng, g.sides.home.memory, g.sides.away.scout), tempo: 'normal' });
+    } else g.cpuAct();
+  }
+  return sc.judge(g, g.log);
 }
