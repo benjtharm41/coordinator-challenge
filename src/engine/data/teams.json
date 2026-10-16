@@ -1,0 +1,322 @@
+[
+ {
+  "abbr": "ARI",
+  "name": "Arizona Cardinals",
+  "nick": "Cardinals",
+  "conf": "NFC",
+  "division": "NFC West",
+  "color": "#97233F",
+  "color2": "#000000",
+  "headCoach": "Jonathan Gannon"
+ },
+ {
+  "abbr": "ATL",
+  "name": "Atlanta Falcons",
+  "nick": "Falcons",
+  "conf": "NFC",
+  "division": "NFC South",
+  "color": "#A71930",
+  "color2": "#000000",
+  "headCoach": "Raheem Morris"
+ },
+ {
+  "abbr": "BAL",
+  "name": "Baltimore Ravens",
+  "nick": "Ravens",
+  "conf": "AFC",
+  "division": "AFC North",
+  "color": "#241773",
+  "color2": "#9E7C0C",
+  "headCoach": "Jesse Minter"
+ },
+ {
+  "abbr": "BUF",
+  "name": "Buffalo Bills",
+  "nick": "Bills",
+  "conf": "AFC",
+  "division": "AFC East",
+  "color": "#00338D",
+  "color2": "#C60C30",
+  "headCoach": "Sean McDermott"
+ },
+ {
+  "abbr": "CAR",
+  "name": "Carolina Panthers",
+  "nick": "Panthers",
+  "conf": "NFC",
+  "division": "NFC South",
+  "color": "#0085CA",
+  "color2": "#000000",
+  "headCoach": "Dave Canales"
+ },
+ {
+  "abbr": "CHI",
+  "name": "Chicago Bears",
+  "nick": "Bears",
+  "conf": "NFC",
+  "division": "NFC North",
+  "color": "#0B162A",
+  "color2": "#E64100",
+  "headCoach": "Ben Johnson"
+ },
+ {
+  "abbr": "CIN",
+  "name": "Cincinnati Bengals",
+  "nick": "Bengals",
+  "conf": "AFC",
+  "division": "AFC North",
+  "color": "#FB4F14",
+  "color2": "#000000",
+  "headCoach": "Zac Taylor"
+ },
+ {
+  "abbr": "CLE",
+  "name": "Cleveland Browns",
+  "nick": "Browns",
+  "conf": "AFC",
+  "division": "AFC North",
+  "color": "#FF3C00",
+  "color2": "#311D00",
+  "headCoach": "Todd Monken"
+ },
+ {
+  "abbr": "DAL",
+  "name": "Dallas Cowboys",
+  "nick": "Cowboys",
+  "conf": "NFC",
+  "division": "NFC East",
+  "color": "#002244",
+  "color2": "#B0B7BC",
+  "headCoach": "Brian Schottenheimer"
+ },
+ {
+  "abbr": "DEN",
+  "name": "Denver Broncos",
+  "nick": "Broncos",
+  "conf": "AFC",
+  "division": "AFC West",
+  "color": "#002244",
+  "color2": "#FB4F14",
+  "headCoach": "Sean Payton"
+ },
+ {
+  "abbr": "DET",
+  "name": "Detroit Lions",
+  "nick": "Lions",
+  "conf": "NFC",
+  "division": "NFC North",
+  "color": "#0076B6",
+  "color2": "#B0B7BC",
+  "headCoach": "Dan Campbell"
+ },
+ {
+  "abbr": "GB",
+  "name": "Green Bay Packers",
+  "nick": "Packers",
+  "conf": "NFC",
+  "division": "NFC North",
+  "color": "#203731",
+  "color2": "#FFB612",
+  "headCoach": "Matt LaFleur"
+ },
+ {
+  "abbr": "HOU",
+  "name": "Houston Texans",
+  "nick": "Texans",
+  "conf": "AFC",
+  "division": "AFC South",
+  "color": "#03202F",
+  "color2": "#A71930",
+  "headCoach": "DeMeco Ryans"
+ },
+ {
+  "abbr": "IND",
+  "name": "Indianapolis Colts",
+  "nick": "Colts",
+  "conf": "AFC",
+  "division": "AFC South",
+  "color": "#002C5F",
+  "color2": "#a5acaf",
+  "headCoach": "Shane Steichen"
+ },
+ {
+  "abbr": "JAX",
+  "name": "Jacksonville Jaguars",
+  "nick": "Jaguars",
+  "conf": "AFC",
+  "division": "AFC South",
+  "color": "#006778",
+  "color2": "#000000",
+  "headCoach": "Liam Coen"
+ },
+ {
+  "abbr": "KC",
+  "name": "Kansas City Chiefs",
+  "nick": "Chiefs",
+  "conf": "AFC",
+  "division": "AFC West",
+  "color": "#E31837",
+  "color2": "#FFB612",
+  "headCoach": "Andy Reid"
+ },
+ {
+  "abbr": "LA",
+  "name": "Los Angeles Rams",
+  "nick": "Rams",
+  "conf": "NFC",
+  "division": "NFC West",
+  "color": "#003594",
+  "color2": "#FFD100",
+  "headCoach": "Sean McVay"
+ },
+ {
+  "abbr": "LAC",
+  "name": "Los Angeles Chargers",
+  "nick": "Chargers",
+  "conf": "AFC",
+  "division": "AFC West",
+  "color": "#007BC7",
+  "color2": "#ffc20e",
+  "headCoach": "Jim Harbaugh"
+ },
+ {
+  "abbr": "LV",
+  "name": "Las Vegas Raiders",
+  "nick": "Raiders",
+  "conf": "AFC",
+  "division": "AFC West",
+  "color": "#000000",
+  "color2": "#A5ACAF",
+  "headCoach": "Klint Kubiak"
+ },
+ {
+  "abbr": "MIA",
+  "name": "Miami Dolphins",
+  "nick": "Dolphins",
+  "conf": "AFC",
+  "division": "AFC East",
+  "color": "#008E97",
+  "color2": "#F58220",
+  "headCoach": "Jeff Hafley"
+ },
+ {
+  "abbr": "MIN",
+  "name": "Minnesota Vikings",
+  "nick": "Vikings",
+  "conf": "NFC",
+  "division": "NFC North",
+  "color": "#4F2683",
+  "color2": "#FFC62F",
+  "headCoach": "Kevin O'Connell"
+ },
+ {
+  "abbr": "NE",
+  "name": "New England Patriots",
+  "nick": "Patriots",
+  "conf": "AFC",
+  "division": "AFC East",
+  "color": "#002244",
+  "color2": "#C60C30",
+  "headCoach": "Mike Vrabel"
+ },
+ {
+  "abbr": "NO",
+  "name": "New Orleans Saints",
+  "nick": "Saints",
+  "conf": "NFC",
+  "division": "NFC South",
+  "color": "#D3BC8D",
+  "color2": "#000000",
+  "headCoach": "Kellen Moore"
+ },
+ {
+  "abbr": "NYG",
+  "name": "New York Giants",
+  "nick": "Giants",
+  "conf": "NFC",
+  "division": "NFC East",
+  "color": "#0B2265",
+  "color2": "#A71930",
+  "headCoach": "John Harbaugh"
+ },
+ {
+  "abbr": "NYJ",
+  "name": "New York Jets",
+  "nick": "Jets",
+  "conf": "AFC",
+  "division": "AFC East",
+  "color": "#003F2D",
+  "color2": "#000000",
+  "headCoach": "Aaron Glenn"
+ },
+ {
+  "abbr": "PHI",
+  "name": "Philadelphia Eagles",
+  "nick": "Eagles",
+  "conf": "NFC",
+  "division": "NFC East",
+  "color": "#004C54",
+  "color2": "#A5ACAF",
+  "headCoach": "Nick Sirianni"
+ },
+ {
+  "abbr": "PIT",
+  "name": "Pittsburgh Steelers",
+  "nick": "Steelers",
+  "conf": "AFC",
+  "division": "AFC North",
+  "color": "#000000",
+  "color2": "#FFB612",
+  "headCoach": "Mike McCarthy"
+ },
+ {
+  "abbr": "SEA",
+  "name": "Seattle Seahawks",
+  "nick": "Seahawks",
+  "conf": "NFC",
+  "division": "NFC West",
+  "color": "#002244",
+  "color2": "#69be28",
+  "headCoach": "Mike Macdonald"
+ },
+ {
+  "abbr": "SF",
+  "name": "San Francisco 49ers",
+  "nick": "49ers",
+  "conf": "NFC",
+  "division": "NFC West",
+  "color": "#AA0000",
+  "color2": "#B3995D",
+  "headCoach": "Kyle Shanahan"
+ },
+ {
+  "abbr": "TB",
+  "name": "Tampa Bay Buccaneers",
+  "nick": "Buccaneers",
+  "conf": "NFC",
+  "division": "NFC South",
+  "color": "#A71930",
+  "color2": "#322F2B",
+  "headCoach": "Todd Bowles"
+ },
+ {
+  "abbr": "TEN",
+  "name": "Tennessee Titans",
+  "nick": "Titans",
+  "conf": "AFC",
+  "division": "AFC South",
+  "color": "#4495D2",
+  "color2": "#D50A0A",
+  "headCoach": "Robert Saleh"
+ },
+ {
+  "abbr": "WAS",
+  "name": "Washington Commanders",
+  "nick": "Commanders",
+  "conf": "NFC",
+  "division": "NFC East",
+  "color": "#5A1414",
+  "color2": "#FFB612",
+  "headCoach": "Dan Quinn"
+ }
+]
